@@ -1,3 +1,5 @@
+import AppKit
+import Darwin
 import Foundation
 import SwiftUI
 
@@ -81,6 +83,22 @@ struct BrowserLaunchPlan: Equatable {
     let arguments: [String]
 }
 
+enum BrowserLaunchAction: Equatable {
+    case activate(Int32)
+    case launch(BrowserLaunchPlan)
+}
+
+struct BrowserProcessMatch: Equatable, Identifiable {
+    let pid: Int32
+    let command: String
+
+    var id: Int32 { pid }
+}
+
+struct BrowserClosePlan: Equatable {
+    let pids: [Int32]
+}
+
 enum ProfileDeleteTarget: Equatable {
     case userDataRoot(String)
     case profileDirectory(String)
@@ -88,17 +106,77 @@ enum ProfileDeleteTarget: Equatable {
 }
 
 enum BrowserLaunchPlanner {
-    static func makePlan(for profile: BrowserProfile) -> BrowserLaunchPlan {
-        BrowserLaunchPlan(
-            executablePath: "/usr/bin/open",
-            arguments: [
-                "-na",
-                profile.browser.appPath,
-                "--args",
-                "--user-data-dir=\(profile.userDataPath)",
-                "--profile-directory=\(profile.directory)"
-            ]
+    static func makeAction(for profile: BrowserProfile, runningPID: Int32?) -> BrowserLaunchAction {
+        if let runningPID {
+            return .activate(runningPID)
+        }
+
+        return .launch(
+            BrowserLaunchPlan(
+                executablePath: "/usr/bin/open",
+                arguments: [
+                    "-na",
+                    profile.browser.appPath,
+                    "--args",
+                    "--user-data-dir=\(profile.userDataPath)",
+                    "--profile-directory=\(profile.directory)"
+                ]
+            )
         )
+    }
+}
+
+enum BrowserClosePlanner {
+    static func makePlan(primaryPID: Int32?, matchedProcesses: [BrowserProcessMatch]) -> BrowserClosePlan {
+        var ordered: [Int32] = []
+
+        if let primaryPID {
+            ordered.append(primaryPID)
+        }
+
+        for pid in matchedProcesses.map(\.pid) where !ordered.contains(pid) {
+            ordered.append(pid)
+        }
+
+        return BrowserClosePlan(pids: ordered)
+    }
+}
+
+enum BrowserProcessPlanner {
+    static func matches(in processListOutput: String, profile: BrowserProfile) -> [BrowserProcessMatch] {
+        let userDataArgument = "--user-data-dir=\(profile.userDataPath)"
+        let browserMarker = profile.browser == .chrome ? "Google Chrome" : "Microsoft Edge"
+
+        return processListOutput
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line in
+                let trimmed = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    return nil
+                }
+
+                let parts = trimmed.split(maxSplits: 1, whereSeparator: \.isWhitespace)
+                guard parts.count == 2, let pid = Int32(parts[0]) else {
+                    return nil
+                }
+
+                let command = String(parts[1])
+                guard command.contains(userDataArgument) else {
+                    return nil
+                }
+                guard command.contains(browserMarker) || command.contains(profile.browser.executablePath) else {
+                    return nil
+                }
+
+                return BrowserProcessMatch(pid: pid, command: command)
+            }
+    }
+}
+
+enum BrowserProfileRuntimePlanner {
+    static func singletonLockPID(from symbolicLinkDestination: String) -> Int32? {
+        let value = symbolicLinkDestination.split(separator: "-").last.map(String.init) ?? symbolicLinkDestination
+        return Int32(value)
     }
 }
 
@@ -179,6 +257,7 @@ final class BrowserProfileStore: ObservableObject {
     @Published private(set) var configs: [BrowserConfig] = []
     @Published var searchQuery: String = ""
     @Published private(set) var recentProfileIDs: [String] = []
+    @Published private(set) var runningProfileIDs = Set<String>()
     @Published private(set) var isScanningNonDefaultDirectories: Bool = false
     @Published var pendingDeleteProfile: BrowserProfile?
     @Published var statusMessage: String = "点击“刷新配置”读取本机浏览器 Profile。"
@@ -215,9 +294,11 @@ final class BrowserProfileStore: ObservableObject {
 
         guard !loadedConfigs.isEmpty else {
             statusMessage = "未检测到可用的 Chrome / Edge 配置。"
+            runningProfileIDs = []
             return
         }
 
+        refreshRunningProfiles()
         let summary = loadedConfigs
             .map { "\($0.browser.displayName): \($0.profiles.count) 个" }
             .joined(separator: "，")
@@ -295,17 +376,62 @@ final class BrowserProfileStore: ObservableObject {
             return
         }
 
-        let launchPlan = BrowserLaunchPlanner.makePlan(for: profile)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: launchPlan.executablePath)
-        process.arguments = launchPlan.arguments
+        let runningPID = singletonLockPID(for: profile)
+        let action = BrowserLaunchPlanner.makeAction(for: profile, runningPID: runningPID)
 
-        do {
-            try process.run()
-            pushRecentProfile(id: profile.id)
-            statusMessage = "已启动 \(profile.browser.displayName) - \(profile.label)"
-        } catch {
-            statusMessage = "启动失败：\(error.localizedDescription)"
+        switch action {
+        case let .activate(pid):
+            guard let app = NSRunningApplication(processIdentifier: pid) else {
+                statusMessage = "切换失败：找不到运行中的浏览器进程。"
+                return
+            }
+
+            let activated = app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+            if activated {
+                pushRecentProfile(id: profile.id)
+                statusMessage = "已切换到 \(profile.browser.displayName) - \(profile.label)"
+            } else {
+                statusMessage = "切换失败：无法激活对应窗口。"
+            }
+
+        case let .launch(launchPlan):
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: launchPlan.executablePath)
+            process.arguments = launchPlan.arguments
+
+            do {
+                try process.run()
+                pushRecentProfile(id: profile.id)
+                statusMessage = "已启动 \(profile.browser.displayName) - \(profile.label)"
+                scheduleRunningProfilesRefresh()
+            } catch {
+                statusMessage = "启动失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func close(profile: BrowserProfile) {
+        let primaryPID = singletonLockPID(for: profile)
+        let matches = runningProcesses(for: profile)
+        let closePlan = BrowserClosePlanner.makePlan(primaryPID: primaryPID, matchedProcesses: matches)
+
+        guard !closePlan.pids.isEmpty else {
+            statusMessage = "没有发现 \(profile.displayName) 的运行中进程。"
+            return
+        }
+
+        var terminatedCount = 0
+        for pid in closePlan.pids {
+            if Darwin.kill(pid, SIGTERM) == 0 {
+                terminatedCount += 1
+            }
+        }
+
+        if terminatedCount > 0 {
+            statusMessage = "已关闭 \(profile.displayName) 的 \(terminatedCount) 个进程。"
+            scheduleRunningProfilesRefresh()
+        } else {
+            statusMessage = "关闭失败：没有可终止的进程。"
         }
     }
 
@@ -407,6 +533,78 @@ final class BrowserProfileStore: ObservableObject {
         }
     }
 
+    func allVisibleProfiles() -> [BrowserProfile] {
+        var result: [BrowserProfile] = []
+        var seenIDs = Set<String>()
+
+        for profile in recentProfiles {
+            if seenIDs.insert(profile.id).inserted {
+                result.append(profile)
+            }
+        }
+
+        for config in configs {
+            for profile in sectionProfiles(for: config) {
+                if seenIDs.insert(profile.id).inserted {
+                    result.append(profile)
+                }
+            }
+        }
+
+        return result
+    }
+
+    func menuProfiles() -> [BrowserProfile] {
+        var result: [BrowserProfile] = []
+        var seenIDs = Set<String>()
+
+        for profile in recentProfilesForMenu() {
+            if seenIDs.insert(profile.id).inserted {
+                result.append(profile)
+            }
+        }
+
+        for profile in configs.flatMap(\.profiles) {
+            if seenIDs.insert(profile.id).inserted {
+                result.append(profile)
+            }
+        }
+
+        return result
+    }
+
+    func recentProfilesForMenu() -> [BrowserProfile] {
+        recentProfileIDs.compactMap(profileByID)
+    }
+
+    func profilesExcludingRecentForMenu() -> [BrowserProfile] {
+        let recentIDs = Set(recentProfilesForMenu().map(\.id))
+        return configs.flatMap(\.profiles).filter { !recentIDs.contains($0.id) }
+    }
+
+    func runningProfilesForMenu() -> [BrowserProfile] {
+        menuProfiles().filter { runningProfileIDs.contains($0.id) }
+    }
+
+    func isRunning(_ profile: BrowserProfile) -> Bool {
+        runningProfileIDs.contains(profile.id)
+    }
+
+    func groupedProfiles() -> [(browser: BrowserKind, profiles: [BrowserProfile])] {
+        BrowserKind.allCases.compactMap { browser in
+            guard let config = configs.first(where: { $0.browser == browser }) else {
+                return nil
+            }
+
+            let profiles = sectionProfiles(for: config)
+            guard !profiles.isEmpty else {
+                return nil
+            }
+
+            return (browser, profiles)
+        }
+    }
+
     private func rebuildConfigs() -> [BrowserConfig] {
         pruneAdditionalUserDataPaths()
         var loadedConfigs: [BrowserConfig] = []
@@ -444,6 +642,13 @@ final class BrowserProfileStore: ObservableObject {
         configs = loadedConfigs
         pruneRecentProfiles()
         return loadedConfigs
+    }
+
+    private func runningProcesses(for profile: BrowserProfile) -> [BrowserProcessMatch] {
+        guard let output = processListOutput() else {
+            return []
+        }
+        return BrowserProcessPlanner.matches(in: output, profile: profile)
     }
 
     private func loadProfiles(for browser: BrowserKind, userDataPath: String) -> [BrowserProfile]? {
@@ -485,6 +690,91 @@ final class BrowserProfileStore: ObservableObject {
             profileSortKey(lhs.directory) < profileSortKey(rhs.directory)
         }
         return profiles
+    }
+
+    func refreshRunningProfiles() {
+        let profiles = configs.flatMap(\.profiles)
+        runningProfileIDs = Set(
+            profiles
+                .filter(isProfileRunning)
+                .map(\.id)
+        )
+    }
+
+    private func scheduleRunningProfilesRefresh() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            refreshRunningProfiles()
+        }
+    }
+
+    private func processListOutput() -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid=,command="]
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard let output = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            return output
+        } catch {
+            statusMessage = "读取进程列表失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    private func isProfileRunning(_ profile: BrowserProfile) -> Bool {
+        if singletonLockPID(for: profile) != nil {
+            return true
+        }
+
+        if hasActiveSingletonSocket(in: profile.userDataPath) {
+            return true
+        }
+
+        guard let output = processListOutput() else {
+            return false
+        }
+        return !BrowserProcessPlanner.matches(in: output, profile: profile).isEmpty
+    }
+
+    private func hasActiveSingletonLock(in userDataPath: String) -> Bool {
+        singletonLockPID(at: userDataPath) != nil
+    }
+
+    private func singletonLockPID(for profile: BrowserProfile) -> Int32? {
+        singletonLockPID(at: profile.userDataPath)
+    }
+
+    private func singletonLockPID(at userDataPath: String) -> Int32? {
+        let lockPath = URL(fileURLWithPath: userDataPath).appendingPathComponent("SingletonLock").path
+        guard let destination = try? fileManager.destinationOfSymbolicLink(atPath: lockPath),
+              let pid = BrowserProfileRuntimePlanner.singletonLockPID(from: destination),
+              processExists(pid: pid) else {
+            return nil
+        }
+        return pid
+    }
+
+    private func hasActiveSingletonSocket(in userDataPath: String) -> Bool {
+        let socketURL = URL(fileURLWithPath: userDataPath).appendingPathComponent("SingletonSocket")
+        let resolved = socketURL.resolvingSymlinksInPath().path
+        return fileManager.fileExists(atPath: resolved)
+    }
+
+    private func processExists(pid: Int32) -> Bool {
+        if Darwin.kill(pid, 0) == 0 {
+            return true
+        }
+        return errno == EPERM
     }
 
     private func readJSON(path: String) -> [String: Any]? {
@@ -695,8 +985,8 @@ final class BrowserProfileStore: ObservableObject {
     }
 }
 
-struct ContentView: View {
-    @StateObject private var store = BrowserProfileStore()
+struct ManagerView: View {
+    @ObservedObject var store: BrowserProfileStore
     @State private var customDirectoryPath: String = ""
     @State private var customDirectoryBrowser: BrowserKind = .chrome
 
@@ -864,11 +1154,107 @@ struct ContentView: View {
     }
 }
 
+struct MenuBarContentView: View {
+    @ObservedObject var store: BrowserProfileStore
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Group {
+            Button("打开管理窗口") {
+                openWindow(id: "manager")
+            }
+
+            Divider()
+
+            if !store.runningProfilesForMenu().isEmpty {
+                Section("正在运行") {
+                    ForEach(store.runningProfilesForMenu()) { profile in
+                        Button("关闭 · \(profileMenuTitle(profile))") {
+                            store.close(profile: profile)
+                        }
+                    }
+                }
+            }
+
+            if !store.recentProfilesForMenu().isEmpty {
+                Section("最近使用") {
+                    ForEach(store.recentProfilesForMenu()) { profile in
+                        Button("\(store.isRunning(profile) ? "切换" : "启动") · \(profileMenuTitle(profile))") {
+                            store.launch(profile: profile)
+                        }
+                    }
+                }
+            }
+
+            if !store.profilesExcludingRecentForMenu().isEmpty {
+                Section("所有配置") {
+                    ForEach(store.profilesExcludingRecentForMenu()) { profile in
+                        Button("\(store.isRunning(profile) ? "切换" : "启动") · \(profileMenuTitle(profile))") {
+                            store.launch(profile: profile)
+                        }
+                    }
+                }
+            }
+
+            if store.menuProfiles().isEmpty {
+                Text("没有可用配置")
+            }
+
+            Divider()
+
+            Button("刷新配置") {
+                store.refreshProfiles()
+            }
+
+            Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描非默认目录") {
+                store.scanNonDefaultDirectories()
+            }
+            .disabled(store.isScanningNonDefaultDirectories)
+
+            Divider()
+
+            Text(store.statusMessage)
+                .lineLimit(2)
+
+            Divider()
+
+            Button("退出") {
+                NSApplication.shared.terminate(nil)
+            }
+        }
+        .onAppear {
+            if store.configs.isEmpty {
+                store.refreshProfiles()
+            } else {
+                store.refreshRunningProfiles()
+            }
+        }
+    }
+
+    private func profileMenuTitle(_ profile: BrowserProfile) -> String {
+        let browserLabel = profile.browser.displayName
+        if let userName = profile.userName, !userName.isEmpty {
+            return "\(browserLabel) · \(profile.displayName) (\(userName))"
+        }
+        return "\(browserLabel) · \(profile.displayName) (\(profile.directory))"
+    }
+}
+
 @main
 struct BrowserProfileLauncherApp: App {
+    @StateObject private var store = BrowserProfileStore()
+
+    init() {
+        NSApplication.shared.setActivationPolicy(.accessory)
+    }
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra("Browser Profiles", systemImage: "globe") {
+            MenuBarContentView(store: store)
+        }
+
+        WindowGroup(id: "manager") {
+            ManagerView(store: store)
         }
     }
 }

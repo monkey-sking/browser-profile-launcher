@@ -45,6 +45,8 @@ cat > "$PLIST_PATH" <<'PLIST'
   <string>APPL</string>
   <key>CFBundleExecutable</key>
   <string>BrowserProfileLauncher</string>
+  <key>LSUIElement</key>
+  <true/>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>
   <key>NSHighResolutionCapable</key>

@@ -114,7 +114,12 @@ import Testing
         isDefault: false
     )
 
-    let plan = BrowserLaunchPlanner.makePlan(for: profile)
+    let action = BrowserLaunchPlanner.makeAction(for: profile, runningPID: nil)
+
+    guard case let .launch(plan) = action else {
+        Issue.record("Expected launch action")
+        return
+    }
 
     #expect(plan.executablePath == "/usr/bin/open")
     #expect(plan.arguments == [
@@ -136,7 +141,12 @@ import Testing
         isDefault: true
     )
 
-    let plan = BrowserLaunchPlanner.makePlan(for: profile)
+    let action = BrowserLaunchPlanner.makeAction(for: profile, runningPID: nil)
+
+    guard case let .launch(plan) = action else {
+        Issue.record("Expected launch action")
+        return
+    }
 
     #expect(plan.arguments.starts(with: [
         "-na",
@@ -145,4 +155,80 @@ import Testing
     ]))
     #expect(plan.arguments.contains("--user-data-dir=/tmp/custom-edge-root"))
     #expect(plan.arguments.contains("--profile-directory=Default"))
+}
+
+@Test func browserLaunchPlannerUsesActivationForRunningProfileSwitch() async throws {
+    let profile = BrowserProfile(
+        browser: .chrome,
+        directory: "Default",
+        displayName: "已运行配置",
+        userName: nil,
+        userDataPath: "/tmp/running-chrome-root",
+        isDefault: false
+    )
+
+    let action = BrowserLaunchPlanner.makeAction(for: profile, runningPID: 49104)
+
+    #expect(action == .activate(49104))
+}
+
+@Test func browserProcessPlannerMatchesOnlyTargetProfileProcesses() async throws {
+    let profile = BrowserProfile(
+        browser: .chrome,
+        directory: "Profile 3",
+        displayName: "工作号",
+        userName: nil,
+        userDataPath: "/Users/example/Profiles/Work Chrome",
+        isDefault: false
+    )
+
+    let processList = """
+      101 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/example/Profiles/Work Chrome --profile-directory=Profile 3
+      102 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper --type=renderer --user-data-dir=/Users/example/Profiles/Work Chrome
+      103 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=/Users/example/Profiles/Other Chrome --profile-directory=Profile 1
+      104 /Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge --user-data-dir=/Users/example/Profiles/Work Chrome --profile-directory=Default
+    """
+
+    let matches = BrowserProcessPlanner.matches(in: processList, profile: profile)
+
+    #expect(matches.map(\.pid) == [101, 102])
+}
+
+@Test func browserProcessPlannerIgnoresMalformedLines() async throws {
+    let profile = BrowserProfile(
+        browser: .edge,
+        directory: "Default",
+        displayName: "Edge",
+        userName: nil,
+        userDataPath: "/tmp/edge-root",
+        isDefault: true
+    )
+
+    let processList = """
+    not-a-process-line
+    301 /Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge --user-data-dir=/tmp/edge-root --profile-directory=Default
+    """
+
+    let matches = BrowserProcessPlanner.matches(in: processList, profile: profile)
+
+    #expect(matches.map(\.pid) == [301])
+}
+
+@Test func browserProfileRuntimePlannerParsesPIDFromSingletonLockDestination() async throws {
+    #expect(BrowserProfileRuntimePlanner.singletonLockPID(from: "Macmini.local-49104") == 49104)
+    #expect(BrowserProfileRuntimePlanner.singletonLockPID(from: "host-name-12345") == 12345)
+    #expect(BrowserProfileRuntimePlanner.singletonLockPID(from: "not-a-pid") == nil)
+}
+
+@Test func browserClosePlannerPrioritizesPrimaryPIDAndDeduplicates() async throws {
+    let matches = [
+        BrowserProcessMatch(pid: 49104, command: "main"),
+        BrowserProcessMatch(pid: 49118, command: "helper1"),
+        BrowserProcessMatch(pid: 49104, command: "duplicate"),
+        BrowserProcessMatch(pid: 49129, command: "helper2"),
+    ]
+
+    let plan = BrowserClosePlanner.makePlan(primaryPID: 49104, matchedProcesses: matches)
+
+    #expect(plan.pids == [49104, 49118, 49129])
 }
