@@ -1226,7 +1226,11 @@ struct MenuBarContentView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(profiles) { profile in
-                            profilePanelRow(profile)
+                            ProfilePanelRowView(
+                                profile: profile,
+                                isRunning: store.isRunning(profile),
+                                store: store
+                            )
                         }
                     }
                     .padding(.vertical, 2)
@@ -1269,10 +1273,15 @@ struct MenuBarContentView: View {
             }
         }
     }
+}
 
-    @ViewBuilder
-    private func profilePanelRow(_ profile: BrowserProfile) -> some View {
-        let isRunning = store.isRunning(profile)
+struct ProfilePanelRowView: View {
+    let profile: BrowserProfile
+    let isRunning: Bool
+    @ObservedObject var store: BrowserProfileStore
+    @State private var isHovered = false
+
+    var body: some View {
         let actions = MenuProfileMenuPlanner.actions(isRunning: isRunning)
 
         HStack(spacing: 10) {
@@ -1306,8 +1315,15 @@ struct MenuBarContentView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(isHovered ? Color.secondary.opacity(0.1) : Color(nsColor: .controlBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .onTapGesture {
+            store.launch(profile: profile)
+        }
     }
 
     private func profilePanelSubtitle(_ profile: BrowserProfile) -> String {
