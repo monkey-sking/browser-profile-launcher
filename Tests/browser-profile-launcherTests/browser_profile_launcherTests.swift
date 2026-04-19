@@ -232,3 +232,47 @@ import Testing
 
     #expect(plan.pids == [49104, 49118, 49129])
 }
+
+@Test func menuProfilePlannerKeepsEachProfileOnceWithRecentFirst() async throws {
+    let recent = BrowserProfile(
+        browser: .chrome,
+        directory: "Profile 1",
+        displayName: "最近账号",
+        userName: nil,
+        userDataPath: "/tmp/chrome-root",
+        isDefault: false
+    )
+    let other = BrowserProfile(
+        browser: .chrome,
+        directory: "Profile 2",
+        displayName: "其他账号",
+        userName: nil,
+        userDataPath: "/tmp/chrome-root",
+        isDefault: false
+    )
+
+    let profiles = MenuProfileMenuPlanner.orderedProfiles(
+        recentProfiles: [recent],
+        allProfiles: [other, recent, other]
+    )
+
+    #expect(profiles.map(\.id) == [recent.id, other.id])
+}
+
+@Test func menuProfilePlannerShowsOpenOnlyWhenProfileIsNotRunning() async throws {
+    #expect(MenuProfileMenuPlanner.actions(isRunning: false) == [.open])
+}
+
+@Test func menuProfilePlannerShowsSwitchAndCloseWhenProfileIsRunning() async throws {
+    #expect(MenuProfileMenuPlanner.actions(isRunning: true) == [.switchTo, .close])
+}
+
+@Test func menuBarPanelLayoutPlannerUsesContentHeightForSmallLists() async throws {
+    let height = MenuBarPanelLayoutPlanner.listHeight(for: 2)
+    #expect(height == 128)
+}
+
+@Test func menuBarPanelLayoutPlannerClampsLargeListsToMaximumHeight() async throws {
+    let height = MenuBarPanelLayoutPlanner.listHeight(for: 20)
+    #expect(height == 520)
+}

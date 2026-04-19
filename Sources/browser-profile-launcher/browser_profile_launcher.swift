@@ -99,6 +99,23 @@ struct BrowserClosePlan: Equatable {
     let pids: [Int32]
 }
 
+enum MenuProfileAction: Hashable {
+    case open
+    case switchTo
+    case close
+
+    var title: String {
+        switch self {
+        case .open:
+            return "打开"
+        case .switchTo:
+            return "切换"
+        case .close:
+            return "关闭"
+        }
+    }
+}
+
 enum ProfileDeleteTarget: Equatable {
     case userDataRoot(String)
     case profileDirectory(String)
@@ -139,6 +156,44 @@ enum BrowserClosePlanner {
         }
 
         return BrowserClosePlan(pids: ordered)
+    }
+}
+
+enum MenuProfileMenuPlanner {
+    static func actions(isRunning: Bool) -> [MenuProfileAction] {
+        isRunning ? [.switchTo, .close] : [.open]
+    }
+
+    static func orderedProfiles(
+        recentProfiles: [BrowserProfile],
+        allProfiles: [BrowserProfile]
+    ) -> [BrowserProfile] {
+        var result: [BrowserProfile] = []
+        var seenIDs = Set<String>()
+
+        for profile in recentProfiles + allProfiles {
+            if seenIDs.insert(profile.id).inserted {
+                result.append(profile)
+            }
+        }
+
+        return result
+    }
+}
+
+enum MenuBarPanelLayoutPlanner {
+    private static let rowHeight: CGFloat = 56
+    private static let extraPadding: CGFloat = 16
+    private static let maxListHeight: CGFloat = 520
+    private static let minEmptyHeight: CGFloat = 140
+
+    static func listHeight(for profileCount: Int) -> CGFloat {
+        guard profileCount > 0 else {
+            return minEmptyHeight
+        }
+
+        let contentHeight = CGFloat(profileCount) * rowHeight + extraPadding
+        return min(contentHeight, maxListHeight)
     }
 }
 
@@ -555,22 +610,10 @@ final class BrowserProfileStore: ObservableObject {
     }
 
     func menuProfiles() -> [BrowserProfile] {
-        var result: [BrowserProfile] = []
-        var seenIDs = Set<String>()
-
-        for profile in recentProfilesForMenu() {
-            if seenIDs.insert(profile.id).inserted {
-                result.append(profile)
-            }
-        }
-
-        for profile in configs.flatMap(\.profiles) {
-            if seenIDs.insert(profile.id).inserted {
-                result.append(profile)
-            }
-        }
-
-        return result
+        MenuProfileMenuPlanner.orderedProfiles(
+            recentProfiles: recentProfilesForMenu(),
+            allProfiles: configs.flatMap(\.profiles)
+        )
     }
 
     func recentProfilesForMenu() -> [BrowserProfile] {
@@ -1159,69 +1202,65 @@ struct MenuBarContentView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Group {
-            Button("打开管理窗口") {
-                openWindow(id: "manager")
-            }
+        let profiles = store.menuProfiles()
+        let listHeight = MenuBarPanelLayoutPlanner.listHeight(for: profiles.count)
 
-            Divider()
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text("浏览器配置")
+                    .font(.headline)
 
-            if !store.runningProfilesForMenu().isEmpty {
-                Section("正在运行") {
-                    ForEach(store.runningProfilesForMenu()) { profile in
-                        Button("关闭 · \(profileMenuTitle(profile))") {
-                            store.close(profile: profile)
-                        }
-                    }
+                Spacer()
+
+                Button("管理") {
+                    openWindow(id: "manager")
+                }
+
+                Button("刷新") {
+                    store.refreshProfiles()
                 }
             }
+            .controlSize(.small)
 
-            if !store.recentProfilesForMenu().isEmpty {
-                Section("最近使用") {
-                    ForEach(store.recentProfilesForMenu()) { profile in
-                        Button("\(store.isRunning(profile) ? "切换" : "启动") · \(profileMenuTitle(profile))") {
-                            store.launch(profile: profile)
+            if !profiles.isEmpty {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(profiles) { profile in
+                            profilePanelRow(profile)
                         }
                     }
+                    .padding(.vertical, 2)
                 }
-            }
-
-            if !store.profilesExcludingRecentForMenu().isEmpty {
-                Section("所有配置") {
-                    ForEach(store.profilesExcludingRecentForMenu()) { profile in
-                        Button("\(store.isRunning(profile) ? "切换" : "启动") · \(profileMenuTitle(profile))") {
-                            store.launch(profile: profile)
-                        }
-                    }
-                }
-            }
-
-            if store.menuProfiles().isEmpty {
+                .frame(height: listHeight)
+            } else {
                 Text("没有可用配置")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: listHeight)
             }
 
             Divider()
 
-            Button("刷新配置") {
-                store.refreshProfiles()
-            }
+            HStack(alignment: .center, spacing: 8) {
+                Text(store.statusMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
 
-            Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描非默认目录") {
-                store.scanNonDefaultDirectories()
-            }
-            .disabled(store.isScanningNonDefaultDirectories)
+                Spacer()
 
-            Divider()
+                Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描") {
+                    store.scanNonDefaultDirectories()
+                }
+                .disabled(store.isScanningNonDefaultDirectories)
 
-            Text(store.statusMessage)
-                .lineLimit(2)
-
-            Divider()
-
-            Button("退出") {
-                NSApplication.shared.terminate(nil)
+                Button("退出") {
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
+        .padding(12)
+        .frame(width: 448)
         .onAppear {
             if store.configs.isEmpty {
                 store.refreshProfiles()
@@ -1231,12 +1270,62 @@ struct MenuBarContentView: View {
         }
     }
 
-    private func profileMenuTitle(_ profile: BrowserProfile) -> String {
-        let browserLabel = profile.browser.displayName
-        if let userName = profile.userName, !userName.isEmpty {
-            return "\(browserLabel) · \(profile.displayName) (\(userName))"
+    @ViewBuilder
+    private func profilePanelRow(_ profile: BrowserProfile) -> some View {
+        let isRunning = store.isRunning(profile)
+        let actions = MenuProfileMenuPlanner.actions(isRunning: isRunning)
+
+        HStack(spacing: 10) {
+            Circle()
+                .fill(isRunning ? Color.green : Color.secondary.opacity(0.35))
+                .frame(width: 8, height: 8)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(profile.displayName)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+
+                Text(profilePanelSubtitle(profile))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 6) {
+                ForEach(actions, id: \.self) { action in
+                    Button(action.title) {
+                        performMenuAction(action, profile: profile)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(action == .close ? .red : .accentColor)
+                }
+            }
         }
-        return "\(browserLabel) · \(profile.displayName) (\(profile.directory))"
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private func profilePanelSubtitle(_ profile: BrowserProfile) -> String {
+        if let userName = profile.userName, !userName.isEmpty {
+            return "\(profile.browser.displayName) · \(profile.directory) · \(userName)"
+        }
+        return "\(profile.browser.displayName) · \(profile.directory)"
+    }
+
+    private func performMenuAction(_ action: MenuProfileAction, profile: BrowserProfile) {
+        switch action {
+        case .open:
+            store.launch(profile: profile)
+        case .switchTo:
+            store.launch(profile: profile)
+        case .close:
+            store.close(profile: profile)
+        }
     }
 }
 
@@ -1252,6 +1341,7 @@ struct BrowserProfileLauncherApp: App {
         MenuBarExtra("Browser Profiles", systemImage: "globe") {
             MenuBarContentView(store: store)
         }
+        .menuBarExtraStyle(.window)
 
         WindowGroup(id: "manager") {
             ManagerView(store: store)
