@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import Foundation
+import ServiceManagement
 import SwiftUI
 
 enum BrowserKind: String, CaseIterable, Identifiable {
@@ -182,10 +183,10 @@ enum MenuProfileMenuPlanner {
 }
 
 enum MenuBarPanelLayoutPlanner {
-    private static let rowHeight: CGFloat = 56
-    private static let extraPadding: CGFloat = 16
-    private static let maxListHeight: CGFloat = 520
-    private static let minEmptyHeight: CGFloat = 140
+    private static let rowHeight: CGFloat = 54
+    private static let extraPadding: CGFloat = 4
+    private static let maxListHeight: CGFloat = 440
+    private static let minEmptyHeight: CGFloat = 60
 
     static func listHeight(for profileCount: Int) -> CGFloat {
         guard profileCount > 0 else {
@@ -194,6 +195,147 @@ enum MenuBarPanelLayoutPlanner {
 
         let contentHeight = CGFloat(profileCount) * rowHeight + extraPadding
         return min(contentHeight, maxListHeight)
+    }
+}
+
+enum LaunchAtLoginServiceStatus: Equatable {
+    case enabled
+    case disabled
+    case requiresApproval
+    case unavailable
+}
+
+enum LaunchAtLoginState: Equatable {
+    case enabled
+    case disabled
+    case requiresApproval
+    case unavailable
+
+    var isOn: Bool {
+        switch self {
+        case .enabled, .requiresApproval:
+            return true
+        case .disabled, .unavailable:
+            return false
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .enabled:
+            return "已开启"
+        case .disabled:
+            return "未开启"
+        case .requiresApproval:
+            return "需要系统批准"
+        case .unavailable:
+            return "当前不可用"
+        }
+    }
+}
+
+protocol LaunchAtLoginControlling {
+    var status: LaunchAtLoginServiceStatus { get }
+    func register() throws
+    func unregister() throws
+}
+
+struct LaunchAgentLaunchAtLoginController: LaunchAtLoginControlling {
+    private let label = "local.dev.browserprofilelauncher"
+    private let fileManager = FileManager.default
+
+    private var launchAgentsDir: URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents")
+    }
+
+    private var plistURL: URL {
+        launchAgentsDir.appendingPathComponent("\(label).plist")
+    }
+
+    private var executablePath: String? {
+        Bundle.main.executableURL?.path
+    }
+
+    private func isLoadedInLaunchd() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "gui/\(getuid())/\(label)"]
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    var status: LaunchAtLoginServiceStatus {
+        guard Bundle.main.bundleURL.pathExtension == "app", executablePath != nil else {
+            return .unavailable
+        }
+        return plistExists() || isLoadedInLaunchd() ? .enabled : .disabled
+    }
+
+    private func plistExists() -> Bool {
+        fileManager.fileExists(atPath: plistURL.path)
+    }
+
+    func register() throws {
+        guard let executablePath else {
+            throw LaunchAgentError.noExecutablePath
+        }
+
+        try fileManager.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [executablePath],
+            "RunAtLoad": true,
+            "KeepAlive": false,
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try data.write(to: plistURL, options: .atomic)
+    }
+
+    func unregister() throws {
+        if isLoadedInLaunchd() {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+            process.arguments = ["bootout", "gui/\(getuid())/\(label)"]
+            try process.run()
+            process.waitUntilExit()
+        }
+        try? fileManager.removeItem(at: plistURL)
+    }
+}
+
+enum LaunchAgentError: Error, LocalizedError {
+    case noExecutablePath
+    case loadFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noExecutablePath:
+            return "无法获取应用路径"
+        case .loadFailed(let detail):
+            return "注册失败：\(detail)"
+        }
+    }
+}
+
+enum LaunchAtLoginPlanner {
+    static func state(for status: LaunchAtLoginServiceStatus) -> LaunchAtLoginState {
+        switch status {
+        case .enabled:
+            return .enabled
+        case .disabled:
+            return .disabled
+        case .requiresApproval:
+            return .requiresApproval
+        case .unavailable:
+            return .unavailable
+        }
     }
 }
 
@@ -314,21 +456,25 @@ final class BrowserProfileStore: ObservableObject {
     @Published private(set) var recentProfileIDs: [String] = []
     @Published private(set) var runningProfileIDs = Set<String>()
     @Published private(set) var isScanningNonDefaultDirectories: Bool = false
+    @Published private(set) var launchAtLoginState: LaunchAtLoginState = .disabled
     @Published var pendingDeleteProfile: BrowserProfile?
     @Published var statusMessage: String = "点击“刷新配置”读取本机浏览器 Profile。"
 
     private let fileManager = FileManager.default
     private let userDefaults = UserDefaults.standard
+    private let launchAtLoginController: any LaunchAtLoginControlling
     private let recentProfilesKey = "browser_profile_launcher_recent_profile_ids"
     private let additionalUserDataPathsKey = "browser_profile_launcher_additional_user_data_paths"
     private let maxRecentProfiles = 20
     private var additionalUserDataPaths: [BrowserKind: Set<String>] = [:]
 
-    init() {
+    init(launchAtLoginController: any LaunchAtLoginControlling = LaunchAgentLaunchAtLoginController()) {
+        self.launchAtLoginController = launchAtLoginController
         recentProfileIDs = userDefaults.stringArray(forKey: recentProfilesKey) ?? []
         if let raw = userDefaults.dictionary(forKey: additionalUserDataPathsKey) as? [String: [String]] {
             additionalUserDataPaths = AdditionalUserDataPathStorage.decode(raw)
         }
+        refreshLaunchAtLoginState()
     }
 
     var recentProfiles: [BrowserProfile] {
@@ -342,6 +488,42 @@ final class BrowserProfileStore: ObservableObject {
             return true
         }
         return configs.contains { !sectionProfiles(for: $0).isEmpty }
+    }
+
+    var launchAtLoginLabel: String {
+        launchAtLoginState.description
+    }
+
+    var canToggleLaunchAtLogin: Bool {
+        launchAtLoginState != .unavailable
+    }
+
+    func refreshLaunchAtLoginState() {
+        launchAtLoginState = LaunchAtLoginPlanner.state(for: launchAtLoginController.status)
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        do {
+            if enabled {
+                try launchAtLoginController.register()
+            } else {
+                try launchAtLoginController.unregister()
+            }
+            refreshLaunchAtLoginState()
+            switch launchAtLoginState {
+            case .enabled:
+                statusMessage = "已开启开机自动启动。"
+            case .disabled:
+                statusMessage = "已关闭开机自动启动。"
+            case .requiresApproval:
+                statusMessage = "已请求开机自动启动，请到系统设置中的登录项批准。"
+            case .unavailable:
+                statusMessage = "当前版本暂不支持开机自动启动。"
+            }
+        } catch {
+            refreshLaunchAtLoginState()
+            statusMessage = "更新开机自动启动失败：\(error.localizedDescription)"
+        }
     }
 
     func refreshProfiles() {
@@ -561,6 +743,9 @@ final class BrowserProfileStore: ObservableObject {
     }
 
     func canDelete(_ profile: BrowserProfile) -> Bool {
+        if isRunning(profile) {
+            return false
+        }
         let defaultUserDataPath = canonicalizePath(profile.browser.userDataPath)
         let target = ProfileDeletePlanner.target(
             for: profile,
@@ -1072,6 +1257,16 @@ struct ManagerView: View {
                 Spacer()
             }
 
+            HStack(spacing: 12) {
+                Toggle("开机自动启动", isOn: launchAtLoginBinding)
+                    .toggleStyle(.switch)
+                    .disabled(!store.canToggleLaunchAtLogin)
+                Text(store.launchAtLoginLabel)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
             Text(store.statusMessage)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -1112,6 +1307,7 @@ struct ManagerView: View {
         .frame(minWidth: 760, minHeight: 460)
         .onAppear {
             store.refreshProfiles()
+            store.refreshLaunchAtLoginState()
         }
         .alert(
             "删除配置",
@@ -1140,10 +1336,16 @@ struct ManagerView: View {
         let subtitleWithPath = "\(baseSubtitle) · \(sourceHint)"
         let subtitle = includeBrowserInSubtitle ? "\(profile.browser.displayName) · \(subtitleWithPath)" : subtitleWithPath
 
-        HStack {
+        HStack(spacing: 12) {
+            Image(nsImage: NSWorkspace.shared.icon(forFile: profile.browser.appPath))
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 32, height: 32)
+
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(profile.displayName)
+                        .font(.body.weight(.medium))
                     if store.isDefaultProfile(profile) {
                         Text("默认")
                             .font(.caption2)
@@ -1195,6 +1397,13 @@ struct ManagerView: View {
             }
         )
     }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { store.launchAtLoginState.isOn },
+            set: { store.setLaunchAtLoginEnabled($0) }
+        )
+    }
 }
 
 struct MenuBarContentView: View {
@@ -1214,6 +1423,7 @@ struct MenuBarContentView: View {
 
                 Button("管理") {
                     openWindow(id: "manager")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
                 }
 
                 Button("刷新") {
@@ -1264,7 +1474,7 @@ struct MenuBarContentView: View {
             }
         }
         .padding(12)
-        .frame(width: 448)
+        .frame(width: 340)
         .onAppear {
             if store.configs.isEmpty {
                 store.refreshProfiles()
@@ -1282,66 +1492,82 @@ struct ProfilePanelRowView: View {
     @State private var isHovered = false
 
     var body: some View {
-        let actions = MenuProfileMenuPlanner.actions(isRunning: isRunning)
-
-        HStack(spacing: 10) {
-            Circle()
-                .fill(isRunning ? Color.green : Color.secondary.opacity(0.35))
-                .frame(width: 8, height: 8)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(profile.displayName)
-                    .font(.callout.weight(.medium))
-                    .lineLimit(1)
-
-                Text(profilePanelSubtitle(profile))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 12)
-
-            HStack(spacing: 6) {
-                ForEach(actions, id: \.self) { action in
-                    Button(action.title) {
-                        performMenuAction(action, profile: profile)
+        HStack(spacing: 12) {
+            // Left main section: Clickable to launch/switch
+            Button(action: {
+                store.launch(profile: profile)
+            }) {
+                HStack(spacing: 12) {
+                    // Browser brand icon with running badge overlay
+                    ZStack(alignment: .bottomTrailing) {
+                        Image(nsImage: NSWorkspace.shared.icon(forFile: profile.browser.appPath))
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 24, height: 24)
+                        
+                        if isRunning {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5)
+                                )
+                                .offset(x: 2, y: 2)
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(action == .close ? .red : .accentColor)
+                    
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(profile.displayName)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+
+                        Text(profilePanelSubtitle(profile))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    
+                    Spacer(minLength: 12)
                 }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+
+            // Right section: Close button (only shown when running)
+            if isRunning {
+                Button(action: {
+                    store.close(profile: profile)
+                }) {
+                    Text("关闭")
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(isHovered ? Color.red.opacity(0.15) : Color.red.opacity(0.08))
+                        .foregroundColor(.red)
+                        .cornerRadius(6)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .transition(.opacity.combined(with: .scale(scale: 0.95)))
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .background(isHovered ? Color.secondary.opacity(0.1) : Color(nsColor: .controlBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(Rectangle())
+        .background(isHovered ? Color.primary.opacity(0.06) : Color.clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .onHover { hovering in
-            isHovered = hovering
-        }
-        .onTapGesture {
-            store.launch(profile: profile)
+            withAnimation(.easeInOut(duration: 0.15)) {
+                isHovered = hovering
+            }
         }
     }
 
     private func profilePanelSubtitle(_ profile: BrowserProfile) -> String {
         if let userName = profile.userName, !userName.isEmpty {
-            return "\(profile.browser.displayName) · \(profile.directory) · \(userName)"
+            return "\(profile.directory) · \(userName)"
         }
-        return "\(profile.browser.displayName) · \(profile.directory)"
-    }
-
-    private func performMenuAction(_ action: MenuProfileAction, profile: BrowserProfile) {
-        switch action {
-        case .open:
-            store.launch(profile: profile)
-        case .switchTo:
-            store.launch(profile: profile)
-        case .close:
-            store.close(profile: profile)
-        }
+        return profile.directory
     }
 }
 
@@ -1359,7 +1585,7 @@ struct BrowserProfileLauncherApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        WindowGroup(id: "manager") {
+        Window("管理", id: "manager") {
             ManagerView(store: store)
         }
     }

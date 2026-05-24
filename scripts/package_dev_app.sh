@@ -10,6 +10,7 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 PLIST_PATH="$CONTENTS_DIR/Info.plist"
+ENTITLEMENTS_SRC="$ROOT_DIR/scripts/BrowserProfileLauncher.entitlements"
 
 cd "$ROOT_DIR"
 swift build -c release --product "$BIN_NAME" >/dev/null
@@ -54,5 +55,8 @@ cat > "$PLIST_PATH" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+codesign --force --sign - --entitlements "$ENTITLEMENTS_SRC" "$APP_DIR" 2>/dev/null \
+  || echo "警告: 代码签名失败（不影响基本功能，但开机自启需要 macOS 14+ 签名支持）"
 
 echo "Packaged: $APP_DIR"

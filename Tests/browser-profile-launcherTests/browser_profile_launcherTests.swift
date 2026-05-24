@@ -269,10 +269,56 @@ import Testing
 
 @Test func menuBarPanelLayoutPlannerUsesContentHeightForSmallLists() async throws {
     let height = MenuBarPanelLayoutPlanner.listHeight(for: 2)
-    #expect(height == 128)
+    #expect(height == 112)
 }
 
 @Test func menuBarPanelLayoutPlannerClampsLargeListsToMaximumHeight() async throws {
     let height = MenuBarPanelLayoutPlanner.listHeight(for: 20)
-    #expect(height == 520)
+    #expect(height == 440)
+}
+
+@Test func launchAtLoginPlannerMapsRequiresApprovalState() async throws {
+    #expect(LaunchAtLoginPlanner.state(for: .requiresApproval) == .requiresApproval)
+}
+
+@MainActor
+@Test func browserProfileStoreRegistersMainAppForLaunchAtLogin() async throws {
+    let controller = MockLaunchAtLoginController(status: .disabled)
+    let store = BrowserProfileStore(launchAtLoginController: controller)
+
+    store.setLaunchAtLoginEnabled(true)
+
+    #expect(controller.registerCallCount == 1)
+    #expect(controller.unregisterCallCount == 0)
+}
+
+@MainActor
+@Test func browserProfileStoreUnregistersMainAppForLaunchAtLogin() async throws {
+    let controller = MockLaunchAtLoginController(status: .enabled)
+    let store = BrowserProfileStore(launchAtLoginController: controller)
+
+    store.setLaunchAtLoginEnabled(false)
+
+    #expect(controller.registerCallCount == 0)
+    #expect(controller.unregisterCallCount == 1)
+}
+
+private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
+    var status: LaunchAtLoginServiceStatus
+    var registerCallCount = 0
+    var unregisterCallCount = 0
+
+    init(status: LaunchAtLoginServiceStatus) {
+        self.status = status
+    }
+
+    func register() throws {
+        registerCallCount += 1
+        status = .enabled
+    }
+
+    func unregister() throws {
+        unregisterCallCount += 1
+        status = .disabled
+    }
 }
