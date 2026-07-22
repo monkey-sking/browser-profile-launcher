@@ -7,6 +7,14 @@ import SwiftUI
 enum BrowserKind: String, CaseIterable, Identifiable {
     case chrome
     case edge
+    case browserClaw
+    case brave
+    case arc
+    case vivaldi
+    case chromium
+    case opera
+    case chromeCanary
+    case edgeCanary
 
     var id: String { rawValue }
 
@@ -16,6 +24,22 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "Chrome"
         case .edge:
             return "Edge"
+        case .browserClaw:
+            return "BrowserClaw"
+        case .brave:
+            return "Brave"
+        case .arc:
+            return "Arc"
+        case .vivaldi:
+            return "Vivaldi"
+        case .chromium:
+            return "Chromium"
+        case .opera:
+            return "Opera"
+        case .chromeCanary:
+            return "Chrome Canary"
+        case .edgeCanary:
+            return "Edge Canary"
         }
     }
 
@@ -25,6 +49,22 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "/Applications/Google Chrome.app"
         case .edge:
             return "/Applications/Microsoft Edge.app"
+        case .browserClaw:
+            return "/Applications/BrowserClaw.app"
+        case .brave:
+            return "/Applications/Brave Browser.app"
+        case .arc:
+            return "/Applications/Arc.app"
+        case .vivaldi:
+            return "/Applications/Vivaldi.app"
+        case .chromium:
+            return "/Applications/Chromium.app"
+        case .opera:
+            return "/Applications/Opera.app"
+        case .chromeCanary:
+            return "/Applications/Google Chrome Canary.app"
+        case .edgeCanary:
+            return "/Applications/Microsoft Edge Canary.app"
         }
     }
 
@@ -34,6 +74,22 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         case .edge:
             return "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        case .browserClaw:
+            return "/Applications/BrowserClaw.app/Contents/MacOS/BrowserClaw"
+        case .brave:
+            return "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"
+        case .arc:
+            return "/Applications/Arc.app/Contents/MacOS/Arc"
+        case .vivaldi:
+            return "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi"
+        case .chromium:
+            return "/Applications/Chromium.app/Contents/MacOS/Chromium"
+        case .opera:
+            return "/Applications/Opera.app/Contents/MacOS/Opera"
+        case .chromeCanary:
+            return "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
+        case .edgeCanary:
+            return "/Applications/Microsoft Edge Canary.app/Contents/MacOS/Microsoft Edge Canary"
         }
     }
 
@@ -44,6 +100,47 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "\(home)/Library/Application Support/Google/Chrome"
         case .edge:
             return "\(home)/Library/Application Support/Microsoft Edge"
+        case .browserClaw:
+            return "\(home)/Library/Application Support/BrowserClaw"
+        case .brave:
+            return "\(home)/Library/Application Support/BraveSoftware/Brave-Browser"
+        case .arc:
+            return "\(home)/Library/Application Support/Arc/User Data"
+        case .vivaldi:
+            return "\(home)/Library/Application Support/Vivaldi"
+        case .chromium:
+            return "\(home)/Library/Application Support/Chromium"
+        case .opera:
+            return "\(home)/Library/Application Support/com.operasoftware.Opera"
+        case .chromeCanary:
+            return "\(home)/Library/Application Support/Google/Chrome Canary"
+        case .edgeCanary:
+            return "\(home)/Library/Application Support/Microsoft Edge Canary"
+        }
+    }
+
+    var processMarker: String {
+        switch self {
+        case .chrome:
+            return "Google Chrome"
+        case .edge:
+            return "Microsoft Edge"
+        case .browserClaw:
+            return "BrowserClaw"
+        case .brave:
+            return "Brave Browser"
+        case .arc:
+            return "Arc"
+        case .vivaldi:
+            return "Vivaldi"
+        case .chromium:
+            return "Chromium"
+        case .opera:
+            return "Opera"
+        case .chromeCanary:
+            return "Google Chrome Canary"
+        case .edgeCanary:
+            return "Microsoft Edge Canary"
         }
     }
 
@@ -342,7 +439,7 @@ enum LaunchAtLoginPlanner {
 enum BrowserProcessPlanner {
     static func matches(in processListOutput: String, profile: BrowserProfile) -> [BrowserProcessMatch] {
         let userDataArgument = "--user-data-dir=\(profile.userDataPath)"
-        let browserMarker = profile.browser == .chrome ? "Google Chrome" : "Microsoft Edge"
+        let browserMarker = profile.browser.processMarker
 
         return processListOutput
             .split(whereSeparator: \.isNewline)
@@ -530,7 +627,7 @@ final class BrowserProfileStore: ObservableObject {
         let loadedConfigs = rebuildConfigs()
 
         guard !loadedConfigs.isEmpty else {
-            statusMessage = "未检测到可用的 Chrome / Edge 配置。"
+            statusMessage = "未检测到可用的浏览器配置。"
             runningProfileIDs = []
             return
         }
@@ -578,7 +675,7 @@ final class BrowserProfileStore: ObservableObject {
         statusMessage = "正在扫描非默认目录，请稍候..."
 
         let discovered = discoverNonDefaultUserDataDirectories()
-        var addedByBrowser: [BrowserKind: Int] = [.chrome: 0, .edge: 0]
+        var addedByBrowser = Dictionary(uniqueKeysWithValues: BrowserKind.allCases.map { ($0, 0) })
 
         for (browser, paths) in discovered {
             var existing = additionalUserDataPaths[browser, default: Set<String>()]
@@ -1116,7 +1213,7 @@ final class BrowserProfileStore: ObservableObject {
     }
 
     private func discoverNonDefaultUserDataDirectories() -> [BrowserKind: Set<String>] {
-        var discovered: [BrowserKind: Set<String>] = [.chrome: Set<String>(), .edge: Set<String>()]
+        var discovered = Dictionary(uniqueKeysWithValues: BrowserKind.allCases.map { ($0, Set<String>()) })
         let rootPaths = DirectoryScanPlanner.rootPaths(
             homeDirectory: NSHomeDirectory(),
             volumePaths: discoverVolumeRootPaths()
@@ -1200,6 +1297,30 @@ final class BrowserProfileStore: ObservableObject {
             return nil
         }
 
+        if lowerPath.contains("browserclaw") {
+            return .browserClaw
+        }
+        if lowerPath.contains("bravesoftware") || lowerPath.contains("brave") {
+            return .brave
+        }
+        if lowerPath.contains("arc") {
+            return .arc
+        }
+        if lowerPath.contains("vivaldi") {
+            return .vivaldi
+        }
+        if lowerPath.contains("chromium") {
+            return .chromium
+        }
+        if lowerPath.contains("opera") {
+            return .opera
+        }
+        if lowerPath.contains("chrome canary") || lowerPath.contains("google/chrome canary") {
+            return .chromeCanary
+        }
+        if lowerPath.contains("microsoft edge canary") {
+            return .edgeCanary
+        }
         if root["edge"] != nil || root["edge_operation_config"] != nil || lowerPath.contains("microsoft edge") {
             return .edge
         }

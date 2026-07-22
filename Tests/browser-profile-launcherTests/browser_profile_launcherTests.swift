@@ -303,6 +303,32 @@ import Testing
     #expect(controller.unregisterCallCount == 1)
 }
 
+@Test func browserLaunchPlannerUsesBrowserClawAppPath() async throws {
+    let profile = BrowserProfile(
+        browser: .browserClaw,
+        directory: "Default",
+        displayName: "BrowserClaw 默认",
+        userName: nil,
+        userDataPath: "/tmp/custom-browserclaw-root",
+        isDefault: true
+    )
+
+    let action = BrowserLaunchPlanner.makeAction(for: profile, runningPID: nil)
+
+    guard case let .launch(plan) = action else {
+        Issue.record("Expected launch action")
+        return
+    }
+
+    #expect(plan.arguments.starts(with: [
+        "-na",
+        "/Applications/BrowserClaw.app",
+        "--args"
+    ]))
+    #expect(plan.arguments.contains("--user-data-dir=/tmp/custom-browserclaw-root"))
+    #expect(plan.arguments.contains("--profile-directory=Default"))
+}
+
 private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
     var status: LaunchAtLoginServiceStatus
     var registerCallCount = 0

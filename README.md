@@ -8,6 +8,13 @@ A small macOS utility that lists local Chrome / Edge browser profiles and lets y
 
 - Chrome
 - Edge
+- BrowserClaw
+- Brave
+- Arc
+- Vivaldi
+- Chromium
+- Opera
+- Chrome Canary / Edge Canary
 
 ## 功能 | Features
 
