@@ -524,6 +524,26 @@ enum AdditionalUserDataPathStorage {
     }
 }
 
+enum LocalStateModifier {
+    static func setLastUsedProfile(directory: String, in localState: inout [String: Any]) {
+        var profileDict = localState["profile"] as? [String: Any] ?? [:]
+        profileDict["last_used"] = directory
+        localState["profile"] = profileDict
+    }
+
+    static func removeProfileFromInfoCache(directory: String, in localState: inout [String: Any]) {
+        guard var profileDict = localState["profile"] as? [String: Any] else { return }
+        if var infoCache = profileDict["info_cache"] as? [String: Any] {
+            infoCache.removeValue(forKey: directory)
+            profileDict["info_cache"] = infoCache
+        }
+        if let lastUsed = profileDict["last_used"] as? String, lastUsed == directory {
+            profileDict["last_used"] = "Default"
+        }
+        localState["profile"] = profileDict
+    }
+}
+
 enum ProfileDeletePlanner {
     static func target(
         for profile: BrowserProfile,
@@ -723,7 +743,16 @@ final class BrowserProfileStore: ObservableObject {
     func setDefaultProfile(_ profile: BrowserProfile) {
         defaultProfileIDsByBrowser[profile.browser] = profile.id
         saveDefaultProfileIDs()
+        syncNativeLastUsedProfile(profile)
         statusMessage = "已将“\(profile.displayName)”设为 \(profile.browser.displayName) 的默认配置。"
+    }
+
+    private func syncNativeLastUsedProfile(_ profile: BrowserProfile) {
+        let localStatePath = "\(profile.userDataPath)/Local State"
+        if var dict = readJSON(path: localStatePath) {
+            LocalStateModifier.setLastUsedProfile(directory: profile.directory, in: &dict)
+            _ = writeJSON(dictionary: dict, path: localStatePath)
+        }
     }
 
     func unsetDefaultProfile(for browser: BrowserKind) {
@@ -867,6 +896,14 @@ final class BrowserProfileStore: ObservableObject {
                 at: URL(fileURLWithPath: targetPath),
                 resultingItemURL: &trashedURL
             )
+
+            if case .profileDirectory = deleteTarget {
+                let localStatePath = "\(profile.userDataPath)/Local State"
+                if var dict = readJSON(path: localStatePath) {
+                    LocalStateModifier.removeProfileFromInfoCache(directory: profile.directory, in: &dict)
+                    _ = writeJSON(dictionary: dict, path: localStatePath)
+                }
+            }
 
             removeAdditionalUserDataPathIfNeeded(profile: profile, deleteTarget: deleteTarget)
             _ = rebuildConfigs()
@@ -1044,6 +1081,10 @@ final class BrowserProfileStore: ObservableObject {
                 guard let item = value as? [String: Any] else {
                     continue
                 }
+                let profileDirectoryPath = "\(canonicalPath)/\(directory)"
+                guard fileManager.fileExists(atPath: profileDirectoryPath) else {
+                    continue
+                }
                 let name = (item["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let displayName = (name?.isEmpty == false) ? name! : directory
                 let userName = item["user_name"] as? String
@@ -1161,6 +1202,18 @@ final class BrowserProfileStore: ObservableObject {
             return nil
         }
         return dictionary
+    }
+
+    private func writeJSON(dictionary: [String: Any], path: String) -> Bool {
+        guard let data = try? JSONSerialization.data(withJSONObject: dictionary, options: [.prettyPrinted, .sortedKeys]) else {
+            return false
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func profileSortKey(_ directory: String) -> (Int, Int, String) {

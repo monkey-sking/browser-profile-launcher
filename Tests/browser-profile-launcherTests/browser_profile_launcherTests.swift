@@ -391,3 +391,27 @@ private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
     #expect(store.isDefaultProfile(edgeProfile))
 }
 
+@Test func localStateModifierUpdatesLastUsedAndRemovesFromInfoCache() async throws {
+    var localState: [String: Any] = [
+        "profile": [
+            "info_cache": [
+                "Profile 1": ["name": "User 1"],
+                "Profile 4": ["name": "User 4"]
+            ],
+            "last_used": "Profile 4"
+        ]
+    ]
+
+    LocalStateModifier.setLastUsedProfile(directory: "Profile 1", in: &localState)
+    let profileDict = localState["profile"] as? [String: Any]
+    #expect(profileDict?["last_used"] as? String == "Profile 1")
+
+    LocalStateModifier.removeProfileFromInfoCache(directory: "Profile 1", in: &localState)
+    let updatedProfileDict = localState["profile"] as? [String: Any]
+    let updatedInfoCache = updatedProfileDict?["info_cache"] as? [String: Any]
+    #expect(updatedInfoCache?["Profile 1"] == nil)
+    #expect(updatedInfoCache?["Profile 4"] != nil)
+    #expect(updatedProfileDict?["last_used"] as? String == "Default")
+}
+
+
