@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import browser_profile_launcher
 
@@ -348,3 +349,45 @@ private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
         status = .disabled
     }
 }
+
+@MainActor
+@Test func testPerBrowserDefaultProfileManagement() async throws {
+    let suiteName = "test_default_profile_\(UUID().uuidString)"
+    guard let userDefaults = UserDefaults(suiteName: suiteName) else {
+        Issue.record("Failed to create isolated UserDefaults")
+        return
+    }
+    defer { userDefaults.removePersistentDomain(forName: suiteName) }
+
+    let store = BrowserProfileStore(userDefaults: userDefaults)
+    let chromeProfile = BrowserProfile(
+        browser: .chrome,
+        directory: "Profile 1",
+        displayName: "Work Chrome",
+        userName: "work@example.com",
+        userDataPath: "/tmp/chrome",
+        isDefault: false
+    )
+    let edgeProfile = BrowserProfile(
+        browser: .edge,
+        directory: "Default",
+        displayName: "Personal Edge",
+        userName: nil,
+        userDataPath: "/tmp/edge",
+        isDefault: true
+    )
+
+    #expect(!store.isDefaultProfile(chromeProfile))
+    store.setDefaultProfile(chromeProfile)
+    #expect(store.isDefaultProfile(chromeProfile))
+    #expect(store.defaultProfileIDsByBrowser[.chrome] == chromeProfile.id)
+
+    store.setDefaultProfile(edgeProfile)
+    #expect(store.isDefaultProfile(edgeProfile))
+    #expect(store.defaultProfileIDsByBrowser[.edge] == edgeProfile.id)
+
+    store.unsetDefaultProfile(for: .chrome)
+    #expect(!store.isDefaultProfile(chromeProfile))
+    #expect(store.isDefaultProfile(edgeProfile))
+}
+

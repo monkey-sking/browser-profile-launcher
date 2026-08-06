@@ -548,6 +548,7 @@ enum ProfileDeletePlanner {
 
 @MainActor
 final class BrowserProfileStore: ObservableObject {
+    @Published private(set) var defaultProfileIDsByBrowser: [BrowserKind: String] = [:]
     @Published private(set) var configs: [BrowserConfig] = []
     @Published var searchQuery: String = ""
     @Published private(set) var recentProfileIDs: [String] = []
@@ -558,21 +559,36 @@ final class BrowserProfileStore: ObservableObject {
     @Published var statusMessage: String = "点击“刷新配置”读取本机浏览器 Profile。"
 
     private let fileManager = FileManager.default
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
     private let launchAtLoginController: any LaunchAtLoginControlling
     private let recentProfilesKey = "browser_profile_launcher_recent_profile_ids"
     private let additionalUserDataPathsKey = "browser_profile_launcher_additional_user_data_paths"
+    private let defaultProfileIDsKey = "browser_profile_launcher_default_profile_ids"
     private let maxRecentProfiles = 20
     private var additionalUserDataPaths: [BrowserKind: Set<String>] = [:]
 
-    init(launchAtLoginController: any LaunchAtLoginControlling = LaunchAgentLaunchAtLoginController()) {
+    init(
+        launchAtLoginController: any LaunchAtLoginControlling = LaunchAgentLaunchAtLoginController(),
+        userDefaults: UserDefaults = .standard
+    ) {
         self.launchAtLoginController = launchAtLoginController
+        self.userDefaults = userDefaults
         recentProfileIDs = userDefaults.stringArray(forKey: recentProfilesKey) ?? []
         if let raw = userDefaults.dictionary(forKey: additionalUserDataPathsKey) as? [String: [String]] {
             additionalUserDataPaths = AdditionalUserDataPathStorage.decode(raw)
         }
+        if let raw = userDefaults.dictionary(forKey: defaultProfileIDsKey) as? [String: String] {
+            var loaded: [BrowserKind: String] = [:]
+            for (key, val) in raw {
+                if let browser = BrowserKind(rawValue: key) {
+                    loaded[browser] = val
+                }
+            }
+            defaultProfileIDsByBrowser = loaded
+        }
         refreshLaunchAtLoginState()
     }
+
 
     var recentProfiles: [BrowserProfile] {
         recentProfileIDs
@@ -704,7 +720,45 @@ final class BrowserProfileStore: ObservableObject {
         statusMessage = "扫描完成：新增 \(addedTotal) 个目录（\(detail)）"
     }
 
+    func setDefaultProfile(_ profile: BrowserProfile) {
+        defaultProfileIDsByBrowser[profile.browser] = profile.id
+        saveDefaultProfileIDs()
+        statusMessage = "已将“\(profile.displayName)”设为 \(profile.browser.displayName) 的默认配置。"
+    }
+
+    func unsetDefaultProfile(for browser: BrowserKind) {
+        defaultProfileIDsByBrowser.removeValue(forKey: browser)
+        saveDefaultProfileIDs()
+        statusMessage = "已取消 \(browser.displayName) 的默认配置。"
+    }
+
+    func isDefaultProfile(_ profile: BrowserProfile) -> Bool {
+        defaultProfileIDsByBrowser[profile.browser] == profile.id
+    }
+
+    func defaultProfile(for browser: BrowserKind) -> BrowserProfile? {
+        guard let targetID = defaultProfileIDsByBrowser[browser] else { return nil }
+        return profileByID(targetID)
+    }
+
+    func launchDefaultProfile(for browser: BrowserKind) {
+        if let profile = defaultProfile(for: browser) {
+            launch(profile: profile)
+        } else {
+            statusMessage = "未指定 \(browser.displayName) 的默认配置。"
+        }
+    }
+
+    private func saveDefaultProfileIDs() {
+        var raw: [String: String] = [:]
+        for (browser, profileID) in defaultProfileIDsByBrowser {
+            raw[browser.rawValue] = profileID
+        }
+        userDefaults.set(raw, forKey: defaultProfileIDsKey)
+    }
+
     func launch(profile: BrowserProfile) {
+
         guard fileManager.fileExists(atPath: profile.browser.appPath) else {
             statusMessage = "未找到浏览器应用：\(profile.browser.appPath)"
             return
@@ -820,10 +874,6 @@ final class BrowserProfileStore: ObservableObject {
         } catch {
             statusMessage = "删除失败：\(error.localizedDescription)"
         }
-    }
-
-    func isDefaultProfile(_ profile: BrowserProfile) -> Bool {
-        profile.isDefault
     }
 
     func isRecentProfile(_ profile: BrowserProfile) -> Bool {
