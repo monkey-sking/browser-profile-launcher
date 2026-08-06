@@ -1459,7 +1459,25 @@ struct ManagerView: View {
                 ForEach(store.configs) { config in
                     let profiles = store.sectionProfiles(for: config)
                     if !profiles.isEmpty {
-                        Section(config.browser.displayName) {
+                        Section(header: HStack {
+                            Text(config.browser.displayName)
+                            Spacer()
+                            if let defaultProfile = store.defaultProfile(for: config.browser) {
+                                Button(action: { store.launchDefaultProfile(for: config.browser) }) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "bolt.fill")
+                                        Text("启动默认")
+                                    }
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.accentColor.opacity(0.15))
+                                    .cornerRadius(4)
+                                }
+                                .buttonStyle(.plain)
+                                .help("启动 \(config.browser.displayName) 的默认配置: \(defaultProfile.displayName)")
+                            }
+                        }) {
                             ForEach(profiles) { profile in
                                 profileRow(profile, showRecentTag: false, includeBrowserInSubtitle: false)
                             }
@@ -1518,11 +1536,12 @@ struct ManagerView: View {
                     Text(profile.displayName)
                         .font(.body.weight(.medium))
                     if store.isDefaultProfile(profile) {
-                        Text("默认")
+                        Text("⭐ 默认")
                             .font(.caption2)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.2))
+                            .background(Color.yellow.opacity(0.25))
+                            .foregroundColor(.orange)
                             .clipShape(Capsule())
                     }
                     if showRecentTag || store.isRecentProfile(profile) {
@@ -1555,6 +1574,17 @@ struct ManagerView: View {
                 store.requestDelete(profile: profile)
             }
             .disabled(!store.canDelete(profile))
+        }
+        .contextMenu {
+            if store.isDefaultProfile(profile) {
+                Button(action: { store.unsetDefaultProfile(for: profile.browser) }) {
+                    Label("取消默认配置", systemImage: "star.slash")
+                }
+            } else {
+                Button(action: { store.setDefaultProfile(profile) }) {
+                    Label("设为 \(profile.browser.displayName) 默认配置", systemImage: "star.fill")
+                }
+            }
         }
     }
 
@@ -1689,10 +1719,21 @@ struct ProfilePanelRowView: View {
                     }
                     
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(profile.displayName)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Text(profile.displayName)
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            if store.isDefaultProfile(profile) {
+                                Text("⭐ 默认")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.yellow.opacity(0.2))
+                                    .foregroundColor(.orange)
+                                    .cornerRadius(3)
+                            }
+                        }
 
                         Text(profilePanelSubtitle(profile))
                             .font(.caption)
@@ -1727,6 +1768,17 @@ struct ProfilePanelRowView: View {
         .padding(.vertical, 8)
         .background(isHovered ? Color.primary.opacity(0.06) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contextMenu {
+            if store.isDefaultProfile(profile) {
+                Button(action: { store.unsetDefaultProfile(for: profile.browser) }) {
+                    Label("取消默认配置", systemImage: "star.slash")
+                }
+            } else {
+                Button(action: { store.setDefaultProfile(profile) }) {
+                    Label("设为 \(profile.browser.displayName) 默认配置", systemImage: "star.fill")
+                }
+            }
+        }
         .onHover { hovering in
             withAnimation(.easeInOut(duration: 0.15)) {
                 isHovered = hovering
