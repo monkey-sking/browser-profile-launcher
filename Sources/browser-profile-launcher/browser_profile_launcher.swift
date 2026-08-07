@@ -113,6 +113,94 @@ enum BrowserPresets {
     }
 }
 
+enum BrowserDiscoveryEngine {
+    static func discoverBrowsers(
+        homeDirectory: String = NSHomeDirectory(),
+        additionalUserDataPaths: [String: Set<String>] = [:]
+    ) -> [DynamicBrowser] {
+        let fm = FileManager.default
+        var results: [DynamicBrowser] = []
+        var seenUserDataPaths = Set<String>()
+
+        for preset in BrowserPresets.all {
+            let localState = "\(preset.userDataPath)/Local State"
+            if fm.fileExists(atPath: localState) {
+                results.append(preset)
+                seenUserDataPaths.insert(preset.userDataPath)
+            }
+        }
+
+        let appSupport = "\(homeDirectory)/Library/Application Support"
+        scanDirectoryForBrowsers(root: appSupport, fm: fm, seenUserDataPaths: &seenUserDataPaths, results: &results)
+
+        for (_, paths) in additionalUserDataPaths {
+            for path in paths {
+                let localState = "\(path)/Local State"
+                if fm.fileExists(atPath: localState) && !seenUserDataPaths.contains(path) {
+                    let folderName = (path as NSString).lastPathComponent
+                    let dynamic = createDynamicBrowser(folderName: folderName, userDataPath: path)
+                    results.append(dynamic)
+                    seenUserDataPaths.insert(path)
+                }
+            }
+        }
+
+        return results
+    }
+
+    private static func scanDirectoryForBrowsers(
+        root: String,
+        fm: FileManager,
+        seenUserDataPaths: inout Set<String>,
+        results: inout [DynamicBrowser]
+    ) {
+        guard let items = try? fm.contentsOfDirectory(atPath: root) else { return }
+        for item in items {
+            let path = "\(root)/\(item)"
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else { continue }
+
+            let topLocalState = "\(path)/Local State"
+            if fm.fileExists(atPath: topLocalState) {
+                if !seenUserDataPaths.contains(path) {
+                    let dynamic = createDynamicBrowser(folderName: item, userDataPath: path)
+                    results.append(dynamic)
+                    seenUserDataPaths.insert(path)
+                }
+                continue
+            }
+
+            if let subItems = try? fm.contentsOfDirectory(atPath: path) {
+                for subItem in subItems {
+                    let subPath = "\(path)/\(subItem)"
+                    var subIsDir: ObjCBool = false
+                    guard fm.fileExists(atPath: subPath, isDirectory: &subIsDir), subIsDir.boolValue else { continue }
+                    let subLocalState = "\(subPath)/Local State"
+                    if fm.fileExists(atPath: subLocalState) && !seenUserDataPaths.contains(subPath) {
+                        let dynamic = createDynamicBrowser(folderName: subItem, userDataPath: subPath)
+                        results.append(dynamic)
+                        seenUserDataPaths.insert(subPath)
+                    }
+                }
+            }
+        }
+    }
+
+    private static func createDynamicBrowser(folderName: String, userDataPath: String) -> DynamicBrowser {
+        let appPath = "/Applications/\(folderName).app"
+        let execPath = "\(appPath)/Contents/MacOS/\(folderName)"
+        let slug = folderName.lowercased().replacingOccurrences(of: " ", with: "-")
+        return DynamicBrowser(
+            id: "dynamic-\(slug)",
+            displayName: folderName,
+            appPath: appPath,
+            userDataPath: userDataPath,
+            executablePath: execPath,
+            processMarker: folderName
+        )
+    }
+}
+
 enum BrowserKind: String, CaseIterable, Identifiable {
     case chrome
     case edge

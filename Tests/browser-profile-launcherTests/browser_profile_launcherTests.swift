@@ -423,5 +423,12 @@ private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
     #expect(egoLite?.userDataPath.contains("Citro Labs/ego lite") == true)
 }
 
+@Test func browserDiscoveryEngineFindsPresetAndDynamicBrowsers() async throws {
+    let home = NSHomeDirectory()
+    let discovered = BrowserDiscoveryEngine.discoverBrowsers(homeDirectory: home)
+    #expect(!discovered.isEmpty)
+}
+
+
 
 
