@@ -429,6 +429,28 @@ private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
     #expect(!discovered.isEmpty)
 }
 
+@MainActor
+@Test func pruneAdditionalUserDataPathsRemovesNativeBrowserPathsFromOtherBrowsers() async throws {
+    let suiteName = "test_prune_\(UUID().uuidString)"
+    guard let userDefaults = UserDefaults(suiteName: suiteName) else {
+        Issue.record("Failed to create isolated UserDefaults")
+        return
+    }
+    defer { userDefaults.removePersistentDomain(forName: suiteName) }
+
+    let egoPath = NSHomeDirectory() + "/Library/Application Support/Citro Labs/ego lite"
+    let encoded = AdditionalUserDataPathStorage.encode([
+        .chrome: Set([egoPath])
+    ])
+    userDefaults.set(encoded, forKey: "browser_profile_launcher_additional_user_data_paths")
+
+    let store = BrowserProfileStore(userDefaults: userDefaults)
+    store.refreshProfiles()
+
+    #expect(store.additionalUserDataPaths[.chrome]?.contains(egoPath) != true)
+}
+
+
 
 
 

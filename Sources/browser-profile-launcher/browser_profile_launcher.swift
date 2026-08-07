@@ -793,7 +793,7 @@ final class BrowserProfileStore: ObservableObject {
     private let additionalUserDataPathsKey = "browser_profile_launcher_additional_user_data_paths"
     private let defaultProfileIDsKey = "browser_profile_launcher_default_profile_ids"
     private let maxRecentProfiles = 20
-    private var additionalUserDataPaths: [BrowserKind: Set<String>] = [:]
+    private(set) var additionalUserDataPaths: [BrowserKind: Set<String>] = [:]
 
     init(
         launchAtLoginController: any LaunchAtLoginControlling = LaunchAgentLaunchAtLoginController(),
@@ -1488,9 +1488,17 @@ final class BrowserProfileStore: ObservableObject {
 
     private func pruneAdditionalUserDataPaths() {
         var changed = false
+        let allNativeUserDataPaths = Set(BrowserKind.allCases.map { canonicalizePath($0.userDataPath) })
+
         for browser in BrowserKind.allCases {
             let current = additionalUserDataPaths[browser, default: Set<String>()]
-            let pruned = Set(current.compactMap { validatedUserDataPath($0) })
+            let pruned = Set(current.compactMap { rawPath -> String? in
+                guard let valid = validatedUserDataPath(rawPath) else { return nil }
+                if allNativeUserDataPaths.contains(valid) {
+                    return nil
+                }
+                return valid
+            })
             if pruned != current {
                 additionalUserDataPaths[browser] = pruned
                 changed = true
