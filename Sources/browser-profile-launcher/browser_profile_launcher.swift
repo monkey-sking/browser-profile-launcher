@@ -204,6 +204,7 @@ enum BrowserDiscoveryEngine {
 enum BrowserKind: String, CaseIterable, Identifiable {
     case chrome
     case edge
+    case egoLite
     case browserClaw
     case brave
     case arc
@@ -221,6 +222,8 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "Chrome"
         case .edge:
             return "Edge"
+        case .egoLite:
+            return "Ego Lite"
         case .browserClaw:
             return "BrowserClaw"
         case .brave:
@@ -246,6 +249,8 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "/Applications/Google Chrome.app"
         case .edge:
             return "/Applications/Microsoft Edge.app"
+        case .egoLite:
+            return "/Applications/ego lite.app"
         case .browserClaw:
             return "/Applications/BrowserClaw.app"
         case .brave:
@@ -271,6 +276,8 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
         case .edge:
             return "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+        case .egoLite:
+            return "/Applications/ego lite.app/Contents/MacOS/ego lite"
         case .browserClaw:
             return "/Applications/BrowserClaw.app/Contents/MacOS/BrowserClaw"
         case .brave:
@@ -297,6 +304,8 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "\(home)/Library/Application Support/Google/Chrome"
         case .edge:
             return "\(home)/Library/Application Support/Microsoft Edge"
+        case .egoLite:
+            return "\(home)/Library/Application Support/Citro Labs/ego lite"
         case .browserClaw:
             return "\(home)/Library/Application Support/BrowserClaw"
         case .brave:
@@ -322,6 +331,8 @@ enum BrowserKind: String, CaseIterable, Identifiable {
             return "Google Chrome"
         case .edge:
             return "Microsoft Edge"
+        case .egoLite:
+            return "ego lite"
         case .browserClaw:
             return "BrowserClaw"
         case .brave:
@@ -1219,7 +1230,7 @@ final class BrowserProfileStore: ObservableObject {
         var loadedConfigs: [BrowserConfig] = []
 
         for browser in BrowserKind.allCases {
-            guard fileManager.fileExists(atPath: browser.appPath) else {
+            guard fileManager.fileExists(atPath: browser.appPath) || fileManager.fileExists(atPath: browser.localStatePath) else {
                 continue
             }
 
