@@ -414,4 +414,14 @@ private final class MockLaunchAtLoginController: LaunchAtLoginControlling {
     #expect(updatedProfileDict?["last_used"] as? String == "Default")
 }
 
+@Test func dynamicBrowserPresetsIncludesEgoLiteAndStandardBrowsers() async throws {
+    let presets = BrowserPresets.all
+    let egoLite = presets.first { $0.id == "ego-lite" }
+    #expect(egoLite != nil)
+    #expect(egoLite?.displayName == "Ego Lite")
+    #expect(egoLite?.appPath == "/Applications/ego lite.app")
+    #expect(egoLite?.userDataPath.contains("Citro Labs/ego lite") == true)
+}
+
+
 
