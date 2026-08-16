@@ -880,7 +880,7 @@ final class BrowserProfileStore: ObservableObject {
         let summary = loadedConfigs
             .map { "\($0.browser.displayName): \($0.profiles.count) 个" }
             .joined(separator: "，")
-        statusMessage = "已读取配置 -> \(summary)"
+        statusMessage = "已读取配置 → \(summary)"
     }
 
     func parseProfiles(from directoryPath: String, browser: BrowserKind) {
@@ -918,34 +918,42 @@ final class BrowserProfileStore: ObservableObject {
         isScanningNonDefaultDirectories = true
         statusMessage = "正在扫描非默认目录，请稍候..."
 
-        let discovered = discoverNonDefaultUserDataDirectories()
-        var addedByBrowser = Dictionary(uniqueKeysWithValues: BrowserKind.allCases.map { ($0, 0) })
+        let basePaths = additionalUserDataPaths
 
-        for (browser, paths) in discovered {
-            var existing = additionalUserDataPaths[browser, default: Set<String>()]
-            for path in paths {
-                if !existing.contains(path) {
-                    existing.insert(path)
-                    addedByBrowser[browser, default: 0] += 1
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let discovered = self?.discoverNonDefaultUserDataDirectories() ?? [:]
+            var addedByBrowser = Dictionary(uniqueKeysWithValues: BrowserKind.allCases.map { ($0, 0) })
+            var mergedPaths = basePaths
+
+            for (browser, paths) in discovered {
+                var existing = mergedPaths[browser, default: Set<String>()]
+                for path in paths {
+                    if !existing.contains(path) {
+                        existing.insert(path)
+                        addedByBrowser[browser, default: 0] += 1
+                    }
+                }
+                mergedPaths[browser] = existing
+            }
+            let addedTotal = addedByBrowser.values.reduce(0, +)
+
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.additionalUserDataPaths = mergedPaths
+                self.persistAdditionalUserDataPaths()
+                _ = self.rebuildConfigs()
+                self.isScanningNonDefaultDirectories = false
+
+                if addedTotal == 0 {
+                    self.statusMessage = "扫描完成：未发现新的非默认目录。"
+                } else {
+                    let detail = BrowserKind.allCases
+                        .map { "\($0.displayName)+\(addedByBrowser[$0, default: 0])" }
+                        .joined(separator: "，")
+                    self.statusMessage = "扫描完成：新增 \(addedTotal) 个目录（\(detail)）"
                 }
             }
-            additionalUserDataPaths[browser] = existing
         }
-        persistAdditionalUserDataPaths()
-
-        _ = rebuildConfigs()
-        isScanningNonDefaultDirectories = false
-
-        let addedTotal = addedByBrowser.values.reduce(0, +)
-        if addedTotal == 0 {
-            statusMessage = "扫描完成：未发现新的非默认目录。"
-            return
-        }
-
-        let detail = BrowserKind.allCases
-            .map { "\($0.displayName)+\(addedByBrowser[$0, default: 0])" }
-            .joined(separator: "，")
-        statusMessage = "扫描完成：新增 \(addedTotal) 个目录（\(detail)）"
     }
 
     func setDefaultProfile(_ profile: BrowserProfile) {
@@ -1401,8 +1409,8 @@ final class BrowserProfileStore: ObservableObject {
         return errno == EPERM
     }
 
-    private func readJSON(path: String) -> [String: Any]? {
-        guard let data = fileManager.contents(atPath: path) else {
+    private nonisolated func readJSON(path: String) -> [String: Any]? {
+        guard let data = FileManager.default.contents(atPath: path) else {
             return nil
         }
         guard let object = try? JSONSerialization.jsonObject(with: data),
@@ -1526,12 +1534,12 @@ final class BrowserProfileStore: ObservableObject {
         return canonicalPath
     }
 
-    private func canonicalizePath(_ path: String) -> String {
+    private nonisolated func canonicalizePath(_ path: String) -> String {
         let expanded = NSString(string: path).expandingTildeInPath
         return URL(fileURLWithPath: expanded).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
-    private func discoverNonDefaultUserDataDirectories() -> [BrowserKind: Set<String>] {
+    private nonisolated func discoverNonDefaultUserDataDirectories() -> [BrowserKind: Set<String>] {
         var discovered = Dictionary(uniqueKeysWithValues: BrowserKind.allCases.map { ($0, Set<String>()) })
         let rootPaths = DirectoryScanPlanner.rootPaths(
             homeDirectory: NSHomeDirectory(),
@@ -1542,12 +1550,12 @@ final class BrowserProfileStore: ObservableObject {
         for rootPath in rootPaths {
             let canonicalRoot = canonicalizePath(rootPath)
             var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: canonicalRoot, isDirectory: &isDirectory), isDirectory.boolValue else {
+            guard FileManager.default.fileExists(atPath: canonicalRoot, isDirectory: &isDirectory), isDirectory.boolValue else {
                 continue
             }
 
             let rootURL = URL(fileURLWithPath: canonicalRoot)
-            guard let enumerator = fileManager.enumerator(
+            guard let enumerator = FileManager.default.enumerator(
                 at: rootURL,
                 includingPropertiesForKeys: [.isDirectoryKey, .nameKey],
                 options: [.skipsPackageDescendants]
@@ -1588,8 +1596,8 @@ final class BrowserProfileStore: ObservableObject {
         return discovered
     }
 
-    private func discoverVolumeRootPaths() -> [String] {
-        guard let entries = try? fileManager.contentsOfDirectory(atPath: "/Volumes") else {
+    private nonisolated func discoverVolumeRootPaths() -> [String] {
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: "/Volumes") else {
             return []
         }
 
@@ -1597,10 +1605,10 @@ final class BrowserProfileStore: ObservableObject {
         for entry in entries {
             let path = "/Volumes/\(entry)"
             var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
                 continue
             }
-            if let attributes = try? fileManager.attributesOfItem(atPath: path),
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: path),
                let type = attributes[.type] as? FileAttributeType,
                type == .typeSymbolicLink {
                 continue
@@ -1610,7 +1618,7 @@ final class BrowserProfileStore: ObservableObject {
         return results
     }
 
-    private func inferBrowser(for userDataPath: String) -> BrowserKind? {
+    private nonisolated func inferBrowser(for userDataPath: String) -> BrowserKind? {
         let lowerPath = userDataPath.lowercased()
         guard let root = readJSON(path: "\(userDataPath)/Local State") else {
             return nil
@@ -1655,56 +1663,39 @@ final class BrowserProfileStore: ObservableObject {
 
 struct ManagerView: View {
     @ObservedObject var store: BrowserProfileStore
-    @State private var customDirectoryPath: String = ""
-    @State private var customDirectoryBrowser: BrowserKind = .chrome
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Browser Profile Launcher")
-                .font(.title2.bold())
-
-            HStack(spacing: 12) {
-                Text("目录")
-                    .frame(width: 64, alignment: .leading)
-                Picker("浏览器", selection: $customDirectoryBrowser) {
-                    ForEach(BrowserKind.allCases) { browser in
-                        Text(browser.displayName).tag(browser)
-                    }
-                }
-                .frame(width: 140)
-                TextField("输入配置目录，例如 ~/Library/Application Support/Google/Chrome", text: $customDirectoryPath)
+            HStack(spacing: 10) {
+                TextField("搜索配置或账号…", text: $store.searchQuery)
                     .textFieldStyle(.roundedBorder)
-                Button("解析目录") {
-                    store.parseProfiles(from: customDirectoryPath, browser: customDirectoryBrowser)
-                }
-            }
 
-            HStack(spacing: 12) {
-                Text("搜索")
-                    .frame(width: 64, alignment: .leading)
-                TextField("按浏览器 / 配置名 / 目录 / 账号过滤", text: $store.searchQuery)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            HStack {
-                Button("刷新配置") {
+                Button("刷新") {
                     store.refreshProfiles()
                 }
-                Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描非默认目录") {
-                    store.scanNonDefaultDirectories()
-                }
-                .disabled(store.isScanningNonDefaultDirectories)
-                Spacer()
-            }
 
-            HStack(spacing: 12) {
-                Toggle("开机自动启动", isOn: launchAtLoginBinding)
-                    .toggleStyle(.switch)
-                    .disabled(!store.canToggleLaunchAtLogin)
-                Text(store.launchAtLoginLabel)
+                HStack(spacing: 6) {
+                    Button(store.isScanningNonDefaultDirectories ? "扫描中…" : "扫描非默认目录") {
+                        store.scanNonDefaultDirectories()
+                    }
+                    .disabled(store.isScanningNonDefaultDirectories)
+                    if store.isScanningNonDefaultDirectories {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                }
+
+                Spacer()
+
+                Text("共 \(store.configs.reduce(0) { $0 + $1.profiles.count }) 个配置")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Spacer()
+
+                Button(action: { openWindow(id: "settings") }) {
+                    Image(systemName: "gearshape")
+                }
+                .help("设置")
             }
 
             Text(store.statusMessage)
@@ -1713,53 +1704,84 @@ struct ManagerView: View {
 
             Divider()
 
-            Text("本机检测到的配置")
+            Text("浏览器配置")
                 .font(.headline)
 
-            List {
-                if !store.recentProfiles.isEmpty {
-                    Section("最近使用") {
-                        ForEach(store.recentProfiles) { profile in
-                            profileRow(profile, showRecentTag: true, includeBrowserInSubtitle: true)
-                        }
-                    }
-                }
-
-                ForEach(store.configs) { config in
-                    let profiles = store.sectionProfiles(for: config)
-                    if !profiles.isEmpty {
-                        Section(header: HStack {
-                            Text(config.browser.displayName)
-                            Spacer()
-                            if let defaultProfile = store.defaultProfile(for: config.browser) {
-                                Button(action: { store.launchDefaultProfile(for: config.browser) }) {
-                                    HStack(spacing: 3) {
-                                        Image(systemName: "bolt.fill")
-                                        Text("启动默认")
-                                    }
-                                    .font(.caption)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.accentColor.opacity(0.15))
-                                    .cornerRadius(4)
-                                }
-                                .buttonStyle(.plain)
-                                .help("启动 \(config.browser.displayName) 的默认配置: \(defaultProfile.displayName)")
-                            }
-                        }) {
-                            ForEach(profiles) { profile in
-                                profileRow(profile, showRecentTag: false, includeBrowserInSubtitle: false)
-                            }
-                        }
-                    }
-                }
-
-                if !store.configs.isEmpty && !store.hasVisibleProfiles {
-                    Text("没有匹配的配置")
+            if store.configs.isEmpty && store.recentProfiles.isEmpty {
+                VStack(spacing: 16) {
+                    Spacer()
+                    Image(systemName: "globe")
+                        .font(.system(size: 44, weight: .light))
+                        .foregroundStyle(AppColors.primary.opacity(0.9))
+                        .frame(width: 88, height: 88)
+                        .background(AppColors.primary.opacity(0.10))
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    Text("未检测到浏览器配置")
+                        .font(.headline)
+                    Text("点击「扫描非默认目录」或「刷新配置」开始")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
+                    HStack(spacing: 8) {
+                        Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描非默认目录") {
+                            store.scanNonDefaultDirectories()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(AppColors.primary)
+                        .disabled(store.isScanningNonDefaultDirectories)
+                        if store.isScanningNonDefaultDirectories {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                    }
+                    Spacer()
                 }
+                .frame(maxWidth: .infinity)
+            } else {
+                List {
+                    if !store.recentProfiles.isEmpty {
+                        Section("最近使用") {
+                            ForEach(store.recentProfiles) { profile in
+                                profileRow(profile, showRecentTag: true, includeBrowserInSubtitle: true)
+                            }
+                        }
+                    }
+
+                    ForEach(store.configs) { config in
+                        let profiles = store.sectionProfiles(for: config)
+                        if !profiles.isEmpty {
+                            Section(header: HStack {
+                                Text(config.browser.displayName)
+                                Spacer()
+                                if let defaultProfile = store.defaultProfile(for: config.browser) {
+                                    Button(action: { store.launchDefaultProfile(for: config.browser) }) {
+                                        HStack(spacing: 3) {
+                                            Image(systemName: "bolt.fill")
+                                            Text("启动默认")
+                                        }
+                                        .font(.caption)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.accentColor.opacity(0.15))
+                                        .cornerRadius(4)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("启动 \(config.browser.displayName) 的默认配置: \(defaultProfile.displayName)")
+                                }
+                            }) {
+                                ForEach(profiles) { profile in
+                                    profileRow(profile, showRecentTag: false, includeBrowserInSubtitle: false)
+                                }
+                            }
+                        }
+                    }
+
+                    if !store.configs.isEmpty && !store.hasVisibleProfiles {
+                        Text("没有匹配的配置")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 180)
             }
-            .frame(minHeight: 180)
         }
         .padding(16)
         .frame(minWidth: 760, minHeight: 460)
@@ -1805,29 +1827,13 @@ struct ManagerView: View {
                     Text(profile.displayName)
                         .font(.body.weight(.medium))
                     if store.isDefaultProfile(profile) {
-                        Text("⭐ 默认")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.yellow.opacity(0.25))
-                            .foregroundColor(.orange)
-                            .clipShape(Capsule())
+                        ProfileTag(kind: .default, text: "默认")
                     }
                     if showRecentTag || store.isRecentProfile(profile) {
-                        Text("最近")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.2))
-                            .clipShape(Capsule())
+                        ProfileTag(kind: .recent, text: "最近")
                     }
                     if store.isNonDefaultProfile(profile) {
-                        Text("非默认目录")
-                            .font(.caption2)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.2))
-                            .clipShape(Capsule())
+                        ProfileTag(kind: .nonDefault, text: "非默认目录")
                     }
                 }
                 Text(subtitle)
@@ -1839,6 +1845,7 @@ struct ManagerView: View {
                 store.launch(profile: profile)
             }
             .buttonStyle(.borderedProminent)
+            .tint(AppColors.primary)
             Button("删除", role: .destructive) {
                 store.requestDelete(profile: profile)
             }
@@ -1873,6 +1880,67 @@ struct ManagerView: View {
             get: { store.launchAtLoginState.isOn },
             set: { store.setLaunchAtLoginEnabled($0) }
         )
+    }
+}
+
+struct SettingsView: View {
+    @ObservedObject var store: BrowserProfileStore
+    @State private var customDirectoryPath: String = ""
+    @State private var customDirectoryBrowser: BrowserKind = .chrome
+    @Environment(\.openWindow) private var openWindow
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { store.launchAtLoginState.isOn },
+            set: { store.setLaunchAtLoginEnabled($0) }
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            GroupBox("解析目录") {
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        Text("浏览器")
+                            .frame(width: 64, alignment: .leading)
+                        Picker("", selection: $customDirectoryBrowser) {
+                            ForEach(BrowserKind.allCases) { browser in
+                                Text(browser.displayName).tag(browser)
+                            }
+                        }
+                        .frame(width: 160)
+                        Spacer()
+                    }
+                    HStack(spacing: 12) {
+                        Text("目录")
+                            .frame(width: 64, alignment: .leading)
+                        TextField("输入配置目录，例如 ~/Library/Application Support/Google/Chrome", text: $customDirectoryPath)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Button("解析目录") {
+                        store.parseProfiles(from: customDirectoryPath, browser: customDirectoryBrowser)
+                    }
+                }
+                .padding(12)
+            }
+
+            GroupBox("开机自动启动") {
+                HStack(spacing: 12) {
+                    Toggle("开机自动启动", isOn: launchAtLoginBinding)
+                        .toggleStyle(.switch)
+                        .disabled(!store.canToggleLaunchAtLogin)
+                    Text(store.launchAtLoginLabel)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding(12)
+            }
+
+            Spacer()
+        }
+        .padding(20)
+        .frame(minWidth: 480, minHeight: 320)
     }
 }
 
@@ -1933,10 +2001,16 @@ struct MenuBarContentView: View {
 
                 Spacer()
 
-                Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描") {
-                    store.scanNonDefaultDirectories()
+                HStack(spacing: 6) {
+                    Button(store.isScanningNonDefaultDirectories ? "扫描中..." : "扫描") {
+                        store.scanNonDefaultDirectories()
+                    }
+                    .disabled(store.isScanningNonDefaultDirectories)
+                    if store.isScanningNonDefaultDirectories {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
                 }
-                .disabled(store.isScanningNonDefaultDirectories)
 
                 Button("退出") {
                     NSApplication.shared.terminate(nil)
@@ -1974,7 +2048,7 @@ struct ProfilePanelRowView: View {
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .frame(width: 24, height: 24)
-                        
+
                         if isRunning {
                             Circle()
                                 .fill(Color.green)
@@ -1994,13 +2068,7 @@ struct ProfilePanelRowView: View {
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
                             if store.isDefaultProfile(profile) {
-                                Text("⭐ 默认")
-                                    .font(.caption2)
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(Color.yellow.opacity(0.2))
-                                    .foregroundColor(.orange)
-                                    .cornerRadius(3)
+                                ProfileTag(kind: .default, text: "默认")
                             }
                         }
 
@@ -2079,6 +2147,10 @@ struct BrowserProfileLauncherApp: App {
 
         Window("管理", id: "manager") {
             ManagerView(store: store)
+        }
+
+        Window("设置", id: "settings") {
+            SettingsView(store: store)
         }
     }
 }
