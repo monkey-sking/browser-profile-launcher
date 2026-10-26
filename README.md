@@ -1,5 +1,9 @@
 # Browser Profile Launcher
 
+<!-- badges:start -->
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](https://github.com/monkey-sking/browser-profile-launcher/blob/main/LICENSE) [![Last commit](https://img.shields.io/github/last-commit/monkey-sking/browser-profile-launcher?style=flat-square)](https://github.com/monkey-sking/browser-profile-launcher/commits/main) [![Swift](https://img.shields.io/github/languages/top/monkey-sking/browser-profile-launcher?style=flat-square)](https://github.com/monkey-sking/browser-profile-launcher/search?l=Swift) [![Release](https://img.shields.io/github/v/release/monkey-sking/browser-profile-launcher?style=flat-square)](https://github.com/monkey-sking/browser-profile-launcher/releases) [![views](https://hits.sh/github.com/monkey-sking/browser-profile-launcher.svg?style=flat-square&label=views&color=0e75b6)](https://github.com/monkey-sking/browser-profile-launcher)
+<!-- badges:end -->
+
 一个 macOS 小工具，用来把本机上的 Chrome / Edge 浏览器配置列出来，并支持直接启动、扫描非默认目录、删除重复配置。
 
 A small macOS utility that lists local Chrome / Edge browser profiles and lets you launch them directly, scan non-default directories, and remove duplicate configs.
